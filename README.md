@@ -1,47 +1,184 @@
-# Deadlock Handling Strategy Simulator
+# Deadlock Prevention, Avoidance, and Recovery: A Quantitative Trade-off Analysis
 
-## Objective
+A discrete-event Python simulation that compares three classic deadlock
+strategies -- **Prevention** (resource ordering), **Avoidance** (Banker's
+Algorithm), and **Detection + Recovery** (periodic detection with victim
+termination and restart) -- under two contention conditions (**Light** and
+**Heavy**), and quantifies the trade-offs between them: throughput, waiting
+time, resource utilization, blocked processes, deadlock episodes, recovery
+cost, work lost to recovery, unnecessary strategic denials, and algorithmic
+overhead.
 
-A discrete-event simulation to quantitatively compare three OS deadlock handling strategies under identical deterministic workloads:
+Built for a BTech Operating Systems course project. The code favours
+straightforward, explainable Python (dataclasses, enums, explicit control
+flow) over frameworks or unnecessary abstraction -- see `ARCHITECTURE.md`
+for why each module looks the way it does.
 
-1. **Prevention** — Resource Ordering
-2. **Avoidance** — Banker's Algorithm
-3. **Detection & Recovery**
+## Installation
 
-The project evaluates how each strategy affects performance, resource usage, deadlocks, and recovery overhead under **Light** and **Heavy** resource contention.
+Requires Python 3.10+.
 
-## Workload
+```bash
+pip install -e .
+```
 
-- 20 processes
-- 5 resources: CPU, Memory, GPU, Disk, Network
-- Heterogeneous resource capacities
-- Deterministic workloads with intentional deadlock-prone patterns
-- 30 Light workloads + 30 Heavy workloads
-- Each workload is independently replayed under all three strategies
-- **180 total simulation runs**
+This installs the pinned dependencies from `requirements.txt` (NumPy 2.x,
+pandas 2.x, Matplotlib 3.x, pytest 8.x) and the `deadlock_sim` package in
+editable mode.
+
+## Project structure
+
+```
+src/deadlock_sim/
+  core/         Authoritative simulation model and execution engine:
+                SimulationConfig, Process, ResourcePool, Holding,
+                PendingRequest, SimulationState, workload schema, event
+                types, the Strategy interface, SimulationResult, and the
+                Simulator itself (the locked tick loop). No dependency on
+                pandas/Matplotlib.
+  strategies/   Prevention, Banker Avoidance, Detection+Recovery. Each
+                inspects SimulationState and returns structured decisions
+                (GRANT/WAIT, victim-termination actions) -- they never
+                mutate shared state directly.
+  workloads/    generate_light(seed) / generate_heavy(seed): deterministic
+                Light/Heavy workload generation.
+  experiment/   metrics.py (pandas aggregation), plots.py (Matplotlib),
+                runner.py (the 180-run experiment + single-run entry point).
+  cli/          `experiment` and `single-run` CLI subcommands.
+tests/          181+ pytest tests: the 20 locked correctness scenarios,
+                parametrized structural/behavioral checks across every
+                workload seed, and experiment/CLI pipeline tests.
+```
+
+See `ARCHITECTURE.md` for module responsibilities and data flow, and
+`INTEGRATION_CONTRACT.md` for the stable interfaces between layers.
+
+## Simulation semantics (short version)
+
+- Exactly 20 processes exist from tick 0 (no START event). There is no CPU
+  scheduler -- CPU is just another ordinary resource, and a process does
+  useful work simply by being `RUNNING`, regardless of what it holds.
+- Every tick executes in exactly this order: holding-duration expirations,
+  explicit RELEASE events, recovery actions, REQUEST events, pending-request
+  FCFS reconsideration, useful-work progression, immediate completion.
+- A REQUEST is always incremental (`allocation += request`). A RELEASE
+  releases everything the process currently holds. Each granted REQUEST
+  creates an independent holding with its own expiration tick; multiple
+  holdings can overlap.
+- A process may have at most one pending REQUEST outstanding at a time; a
+  scheduled REQUEST due while the process is already `WAITING` is deferred
+  to the next tick. RELEASE is not restricted this way -- it fires on
+  schedule regardless of WAITING status (see `ARCHITECTURE.md` for why this
+  specific asymmetry matters for Detection+Recovery to have genuine work to
+  do).
+- A restarted process (Detection+Recovery victim) is a full restart:
+  `completed_work = 0`, allocation cleared, pending discarded, timers
+  cancelled, and its *entire original* REQUEST/RELEASE sequence is replayed
+  from the beginning with timestamps shifted to the restart tick.
+
+Full locked semantics are in the module docstrings, principally
+`core/simulator.py`, `core/events.py`, `core/holdings.py`.
+
+## The three strategies
+
+| Strategy | How it decides | Can a real deadlock occur? |
+|---|---|---|
+| **Prevention** | Resource ordering (CPU < Memory < GPU < Disk < Network); a process may only request resources ranked >= the highest it currently holds. | No cycle can form, but an ordering-violating request just waits (possibly a long time) until the process gives up what it holds via its own scheduled RELEASE. |
+| **Avoidance (Banker)** | Before granting, runs the safety algorithm against local, read-only copies of Allocation/Need/Available (never mutates real state -- so there's nothing to roll back). Grants only if the resulting state is safe. | No -- unsafe grants are simply refused (WAIT), at the cost of some refusals that turn out to have been unnecessary. |
+| **Detection + Recovery** | Grants whenever resources are currently available; no lookahead. Every 10 ticks, runs matrix-based detection (Available/Allocation/PendingRequest) and, if a deadlock is found, repeatedly picks a victim (lowest `completed_work`, tie-break lowest pid), terminates and fully restarts it, and re-detects until clear. | Yes, by design -- this is the strategy that has to clean up after the fact. |
+
+## Workload conditions
+
+`workloads/generator.py` builds a deterministic Light or Heavy workload for
+a given seed: `generate_light(1..30)`, `generate_heavy(101..130)`. Rather
+than one recurring conflated pattern, each workload mixes three separate,
+deliberately-engineered pressure types -- each isolating exactly one
+strategy's distinguishing cost -- with plain ordinary background processes:
+
+- **Ordering-violation processes** (Prevention pressure): a single process
+  holds a higher-ranked resource then requests a *modest*, almost-always-
+  available amount of a lower-ranked one, so the resulting wait is
+  attributable to the ordering rule itself rather than raw scarcity.
+- **Banker-trap groups** (Avoidance pressure): a small group of processes
+  claim one shared resource such that the last one's request is *currently
+  satisfiable* but would leave every process's remaining Need positive with
+  zero slack left -- the textbook available-but-unsafe state. Only
+  Avoidance pays a cost here; Prevention and Detection+Recovery just grant
+  it and move on.
+- **Deadlock cycles** (Detection+Recovery pressure): varied 2-process
+  cycles (an arbitrary resource pair each time, not just adjacent ranks)
+  plus, in Heavy, a genuine 3-process cycle (P0 holds A wants B, P1 holds B
+  wants C, P2 holds C wants A). Heavy's 70% claim-intensity cap makes
+  bilateral resource overflow (and hence a guaranteed, unavoidable cyclic
+  wait) mathematically guaranteed; Light's 40% cap makes it possible only
+  with help from incidental background contention, so Light shows real
+  waiting but rarely an actual detected episode -- matching the spec's
+  "Light: lower deadlock-pattern frequency" requirement.
+
+Every seed also carries plain ordinary background processes with no
+embedded pressure pattern, so the workload reads as a controlled
+experimental mix rather than a wall-to-wall adversarial benchmark. See the
+module docstring in `workloads/generator.py` for the full reasoning and
+`IMPLEMENTATION_STATUS.md` for the before/after experiment numbers this
+redesign produced.
 
 ## Metrics
 
-- Throughput
-- Average waiting time
-- Resource utilization
-- Blocked processes
-- Deadlocks
-- Recovery actions
-- Useful work lost
-- Recovery cost
-- Unnecessarily denied requests
-- Algorithmic overhead
+Every run produces a `SimulationResult` (`core/result.py`) with: total
+useful work and throughput (per actual elapsed tick, not configured max),
+per-request waiting time and average, distinct blocked processes,
+per-resource and overall utilization, deadlock episodes (counted once per
+detection tick that finds a deadlock), recovery actions and distinct
+restarted processes, useful work lost to recovery, resources wasted
+(resource-unit-time held before a termination), unnecessary strategic
+denials (WAITs caused by policy despite the resource being available), and
+algorithm overhead (strategy-specific operation counters).
 
-Results are retained per run and aggregated using **mean ± standard deviation**.
+## Running the experiment
 
-## Execution
+```bash
+python -m deadlock_sim.cli.main experiment
+```
 
-The project provides two modes:
+Runs all 180 combinations (30 Light seeds + 30 Heavy seeds, each against all
+3 strategies) from fresh state per run, and writes a timestamped directory
+under `results/`:
 
-- `experiment` — Runs the complete 180-run experiment and generates results and plots.
-- `single-run` — Runs an individual workload and strategy for debugging.
+```
+results/experiment_<timestamp>/
+  raw/<condition>_seed<N>_<strategy>.json   # one file per run
+  raw_all.json                              # all 180, combined
+  aggregate.csv                             # one row per run
+  summary.csv                               # mean +/- std per condition/strategy, plus n_runs
+  run_report.txt                            # total/incomplete run counts
+  plots/*.png                               # the 8 required plots
+```
 
-## Reproducibility
+Use `--output DIR` to change the root directory and `--quiet` to suppress
+progress output.
 
-Given the same configuration, workload, seed, and strategy, simulation results are deterministic.
+## Single-run debugging
+
+```bash
+python -m deadlock_sim.cli.main single-run --condition heavy --seed 101 --strategy detection_recovery
+```
+
+Prints a console summary of that one run; add `--output result.json` to
+also save the full structured result.
+
+## Testing
+
+```bash
+pip install -e .
+python -m pytest tests/ -q                        # full suite
+python -m pytest tests/test_banker.py -q           # a single file
+```
+
+The suite (206 tests) covers the 20 locked correctness scenarios from the
+project spec (zero-resource requests, single-instance resources, Banker
+unsafe-but-not-deadlocked, tie-breaking, tentative-grant semantics,
+predicted-vs-actual safe-sequence verification, detection episode counting,
+victim selection, full restart/replay, repeated recovery-loss accumulation,
+tick ordering, determinism, max-ticks incompleteness, and more) plus
+parametrized structural/behavioral validation across every one of the 60
+Light/Heavy seeds and a full end-to-end 180-run integration test.
