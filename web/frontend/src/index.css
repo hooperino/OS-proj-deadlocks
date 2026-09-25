@@ -1,0 +1,88 @@
+@import "tailwindcss";
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-sans/700.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "@fontsource/ibm-plex-mono/600.css";
+
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+
+  /* Base surfaces -- a dark navy-charcoal console, not pure black */
+  --color-void: #0a0e14;
+  --color-panel: #121821;
+  --color-panel-raised: #1a222c;
+  --color-panel-inset: #0e131a;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-border-strong: rgba(255, 255, 255, 0.14);
+
+  /* Text */
+  --color-text: #e6e9ee;
+  --color-text-muted: #8b97a8;
+  --color-text-faint: #55606e;
+
+  /* Primary UI accent -- warm amber, distinct from every strategy color */
+  --color-amber: #e8a33d;
+  --color-amber-soft: #e8a33d1f;
+
+  /* Strategy colors -- identical hex values to the CLI's Matplotlib plots,
+     so the web dashboard and the presentation-ready static exports read
+     as one consistent visual system. */
+  --color-prevention: #4c72b0;
+  --color-prevention-soft: #4c72b01f;
+  --color-avoidance: #55a868;
+  --color-avoidance-soft: #55a8681f;
+  --color-recovery: #c44e52;
+  --color-recovery-soft: #c44e521f;
+
+  /* Status */
+  --color-good: #55a868;
+  --color-bad: #c44e52;
+  --color-warn: #e8a33d;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--color-void);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--color-amber-soft);
+  color: var(--color-amber);
+}
+
+/* Thin, quiet scrollbars matching the console aesthetic */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-panel-raised) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-panel-raised);
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-amber);
+  outline-offset: 2px;
+}
